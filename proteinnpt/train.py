@@ -5,79 +5,105 @@ import sys
 import torch
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, List
 from collections import defaultdict
 from scipy.stats import spearmanr
+from torch.utils.data import DataLoader, Dataset
+from torch.optim import AdamW
+from torch.nn import CrossEntropyLoss, MSELoss
+from torch.cuda.amp import GradScaler, autocast
 
 # Import custom modules and functions
 from protein_npt import ProteinNPTModel, Trainer
 from utils.data_utils import Alphabet, collate_fn_protein_npt
 from utils.esm import pretrained
 
+# Other imports as needed
 import random
 import time
 import tqdm
-from torch.utils.data import DataLoader, Dataset
-from torch.optim import AdamW
-from torch.nn import CrossEntropyLoss, MSELoss
-from torch.cuda.amp import GradScaler, autocast
 import wandb  # If using Weights & Biases for logging
 
 # Import custom modules and functions
 from baselines import BaselineModel  # Replace with actual baseline model if used
-from utils.msa_utils import weighted_sample_MSA
-from utils.model_utils import get_parameter_names, get_learning_rate, update_lr_optimizer
-from utils import model_utils  # Import other utility functions as needed
+from datasets import ProteinDataset  # Replace with actual dataset class if used
+from losses import CustomLoss  # Replace with actual loss class if used
+from metrics import compute_spearman  # Replace with actual metric function if used
+from callbacks import EarlyStopping  # Replace with actual callback class if used
+from schedulers import CustomScheduler  # Replace with actual scheduler class if used
 
 # If using distributed training, import necessary distributed package
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-# If using custom dataset classes, import them
-from datasets import ProteinDataset  # Replace with actual dataset class if used
+def set_seed(seed: int) -> None:
+    """
+    Set the seed for reproducibility.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-# If using custom loss functions or metrics, import them
-from losses import CustomLoss  # Replace with actual loss class if used
-from metrics import compute_spearman  # Replace with actual metric function if used
-
-# If using custom callbacks or schedulers, import them
-from callbacks import EarlyStopping  # Replace with actual callback class if used
-from schedulers import CustomScheduler  # Replace with actual scheduler class if used
-
-def load_data(data_path: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def load_data(data_path: str) -> Tuple[Dataset, Dataset]:
     # Placeholder function to load training and validation data
     # Replace with actual data loading code
-    train_data = {}
-    val_data = {}
-    return train_data, val_data
+    train_dataset = ProteinDataset(data_path)
+    val_dataset = ProteinDataset(data_path)
+    return train_dataset, val_dataset
 
 def load_model_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, 'r') as f:
         config = json.load(f)
     return config
 
+def create_dataloaders(train_dataset: Dataset, val_dataset: Dataset, args: argparse.Namespace) -> Tuple[DataLoader, DataLoader]:
+    """
+    Create DataLoaders for the training and validation datasets.
+    """
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=args.training_num_assay_sequences_per_batch_per_gpu,
+        shuffle=True,
+        num_workers=args.num_data_loaders_workers,
+        collate_fn=collate_fn_protein_npt
+    )
+    val_loader = DataLoader(
+        dataset=val_dataset,
+        batch_size=args.eval_num_sequences_to_score_per_batch_per_gpu,
+        shuffle=False,
+        num_workers=args.num_data_loaders_workers,
+        collate_fn=collate_fn_protein_npt
+    )
+    return train_loader, val_loader
+
 def main(args: argparse.Namespace):
+    # Set seed for reproducibility
+    set_seed(args.seed)
+
     # Load data
-    train_data, val_data = load_data(args.data_path)
+    train_dataset, val_dataset = load_data(args.data_path)
+    train_loader, val_loader = create_dataloaders(train_dataset, val_dataset, args)
 
     # Load model configuration
     model_config = load_model_config(args.model_config_path)
 
     # Create the model
-    model = ProteinNPTModel(args=model_config, alphabet=Alphabet())
+    model = ProteinNPTModel(model_config, Alphabet())
 
     # Initialize the trainer
     trainer = Trainer(
         model=model,
         args=args,
-        train_data=train_data,
-        val_data=val_data,
+        train_loader=train_loader,
+        val_loader=val_loader,
         MSA_sequences=None,  # Replace with actual MSA sequences if needed
         MSA_weights=None,    # Replace with actual MSA weights if needed
         MSA_start_position=None,  # Replace with actual MSA start position if needed
         MSA_end_position=None,    # Replace with actual MSA end position if needed
         target_processing=None,   # Replace with actual target processing if needed
-        distributed_training=False  # Set to True if using distributed training
+        distributed_training=args.distributed_training
     )
 
     # Start training
@@ -86,7 +112,6 @@ def main(args: argparse.Namespace):
     print(f"Training completed with status: {trainer_final_status}")
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(description="Train ProteinNPT Model")
     parser.add_argument('--data_path', type=str, required=True, help='Path to the training and validation data')
     parser.add_argument('--model_config_path', type=str, required=True, help='Path to the model configuration file')
