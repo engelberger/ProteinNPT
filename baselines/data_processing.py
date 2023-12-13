@@ -1,13 +1,46 @@
 import sys
+from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 import pickle
 import torch
+from torch import Tensor
 from utils.data_utils import slice_sequences, get_indices_retrieved_embeddings
 from utils.msa_utils import weighted_sample_MSA
 
-def process_batch(batch, model, alphabet, args, device, MSA_sequences=None, MSA_weights=None, MSA_start_position=None, MSA_end_position=None, eval_mode = True, mirror = False, start_idx=1):
+def process_batch(
+    batch: Dict[str, Tensor],
+    model: torch.nn.Module,
+    alphabet: Any,  # Replace 'Any' with the actual type of 'alphabet'
+    args: Any,  # Replace 'Any' with the actual type of 'args'
+    device: torch.device,
+    MSA_sequences: Optional[List[str]] = None,
+    MSA_weights: Optional[Tensor] = None,
+    MSA_start_position: Optional[int] = None,
+    MSA_end_position: Optional[int] = None,
+    eval_mode: bool = True,
+    mirror: bool = False,
+    start_idx: int = 1
+) -> Dict[str, Any]:
     """
-    start_idx is the one-indexed postion of the first residue in the sequence. If full sequence is passed (as always assumed in this codebase) this is equal to 1.
+    Processes a batch of sequences and prepares it for input into the model.
+    
+    Args:
+        batch: A dictionary containing various information about the batch, including mutant sequences.
+        model: The model that will process the batch.
+        alphabet: An object that provides utilities for converting sequences to tokens.
+        args: An object containing various configuration parameters.
+        device: The device to which tensors should be moved.
+        MSA_sequences: A list of multiple sequence alignment (MSA) sequences.
+        MSA_weights: Weights for the non-reference sequences in the MSA.
+        MSA_start_position: The starting position of the MSA.
+        MSA_end_position: The ending position of the MSA.
+        eval_mode: Whether the model is in evaluation mode or not.
+        mirror: Whether to mirror the sequences or not.
+        start_idx: The one-indexed position of the first residue in the sequence.
+    
+    Returns:
+        A dictionary containing the processed batch, including tokenized input sequences,
+        target labels, mutant sequence pairs, and sequence embeddings if applicable.
     """
     target_names = args.target_config.keys()
     raw_sequence_length = len(batch['mutant_mutated_seq_pairs'][0][1]) 

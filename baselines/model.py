@@ -13,8 +13,51 @@ from utils.esm import pretrained
 from utils.esm.axial_attention import RowSelfAttention, ColumnSelfAttention
 from utils import model_utils, tranception
 
+from typing import Any, Dict, List, Optional, Tuple, Union
+from torch import Tensor
+
 class AugmentedPropertyPredictor(nn.Module):
-    def __init__(self, args, alphabet):
+    """
+    A neural network module for predicting protein properties augmented with additional features.
+    
+    Attributes:
+        args: A configuration object containing model and training parameters.
+        alphabet: An Alphabet object that contains information about the tokenization scheme.
+        alphabet_size: The size of the alphabet used for tokenization.
+        padding_idx: Index used for padding in token sequences.
+        mask_idx: Index used for masking in token sequences.
+        cls_idx: Index used for the classification token in token sequences.
+        eos_idx: Index used for the end-of-sequence token in token sequences.
+        prepend_bos: Whether to prepend a beginning-of-sequence token.
+        append_eos: Whether to append an end-of-sequence token.
+        target_names: A list of names for the targets being predicted.
+        MSA_sample_sequences: Placeholder for multiple sequence alignment samples.
+        device: The device on which the model is or will be loaded.
+        embeddings_dict: Placeholder for embedding dictionary.
+        model_type: The type of model specified in the arguments.
+        aa_embedding: The amino acid embedding module.
+        emb_layer_norm_after: Layer normalization applied after embeddings.
+        dropout_module: Dropout layer applied after layer normalization.
+        layer_pre_head: The module applied before the target prediction head.
+        target_pred_head: A dictionary of modules for predicting each target.
+        unsupervised_fitness_prediction_weight: ModuleDict for unsupervised fitness prediction weights.
+        
+    Methods:
+        set_device: Assigns the device to the model based on the location of its parameters.
+        forward: Performs a forward pass through the model.
+        forward_with_uncertainty: Performs forward passes with MC dropout to estimate uncertainty.
+        max_tokens_per_msa_: Sets the maximum number of tokens per MSA for batching attention computations.
+        prediction_loss: Computes the loss between target predictions and labels.
+        create_optimizer: Creates an optimizer for the model.
+    """
+    def __init__(self, args: Any, alphabet: Any) -> None:
+        """
+        Initializes the AugmentedPropertyPredictor model with given arguments and alphabet.
+        
+        Args:
+            args: A configuration object containing model and training parameters.
+            alphabet: An Alphabet object that contains information about the tokenization scheme.
+        """
         super().__init__()
         self.args = args
         self.alphabet = alphabet
@@ -138,12 +181,34 @@ class AugmentedPropertyPredictor(nn.Module):
                 }
         )
     
-    def set_device(self):
+
+    def set_device(self) -> None:
+        """
+        Assigns the device to the model based on the location of its parameters.
+        """
+
         if self.device is None:
             self.device = next(self.parameters()).device
         print("Model device: {}".format(self.device))
 
-    def forward(self, tokens, unsupervised_fitness_predictions=None, sequence_embeddings=None, repr_layers=[]):
+    def forward(self, 
+                tokens: Tensor, 
+                unsupervised_fitness_predictions: Optional[Tensor] = None, 
+                sequence_embeddings: Optional[Tensor] = None, 
+                repr_layers: List[int] = []) -> Dict[str, Any]:
+        """
+        Performs a forward pass through the model.
+        
+        Args:
+            tokens: Input token sequences as a tensor.
+            unsupervised_fitness_predictions: Optional tensor of unsupervised fitness predictions.
+            sequence_embeddings: Optional tensor of precomputed sequence embeddings.
+            repr_layers: Optional list of integers specifying which layers' representations to return.
+            
+        Returns:
+            A dictionary containing target predictions and hidden representations.
+        """
+
         if self.args.aa_embeddings == "MSA_Transformer" and self.args.sequence_embeddings_location is None:
             assert tokens.ndim == 3, "Finding dimension of tokens to be: {}".format(tokens.ndim)
             num_MSAs_in_batch, num_sequences_in_alignments, seqlen = tokens.size()
@@ -214,11 +279,25 @@ class AugmentedPropertyPredictor(nn.Module):
         
         return result
     
-    def forward_with_uncertainty(self, tokens, unsupervised_fitness_predictions=None, sequence_embeddings=None, num_MC_dropout_samples=10):
+
+    def forward_with_uncertainty(self, 
+                                 tokens: Tensor, 
+                                 unsupervised_fitness_predictions: Optional[Tensor] = None, 
+                                 sequence_embeddings: Optional[Tensor] = None, 
+                                 num_MC_dropout_samples: int = 10) -> Dict[str, Dict[str, Tensor]]:
         """
-        Performs MC dropout to compute predictions and the corresponding uncertainties.
-        Assumes 1D predictions (eg., prediction of continuous output).
+        Performs forward passes with MC dropout to estimate uncertainty.
+        
+        Args:
+            tokens: Input token sequences as a tensor.
+            unsupervised_fitness_predictions: Optional tensor of unsupervised fitness predictions.
+            sequence_embeddings: Optional tensor of precomputed sequence embeddings.
+            num_MC_dropout_samples: The number of Monte Carlo dropout samples to draw.
+            
+        Returns:
+            A dictionary of dictionaries containing average predictions and uncertainties for each target.
         """
+
         self.eval() 
         for m in self.modules(): #Move all dropout layers in train mode to support MC dropout. Keep everything else in eval mode.
             if m.__class__.__name__.startswith('Dropout'):
@@ -239,18 +318,39 @@ class AugmentedPropertyPredictor(nn.Module):
 
     @property
     def num_layers(self):
+        """
+        
+        """
         return self.args.num_protein_npt_layers
     
     def max_tokens_per_msa_(self, value: int) -> None:
         """
-        Batching attention computations when gradients are disabled as per MSA_Transformer
+        Sets the maximum number of tokens per MSA for batching attention computations.
+                Batching attention computations when gradients are disabled as per MSA_Transformer
         Set this value to infinity to disable this behavior.
-        """
+
+        Args:
+            value: The maximum number of tokens per MSA        """
         for module in self.modules():
             if isinstance(module, (RowSelfAttention, ColumnSelfAttention)):
                 module.max_tokens_per_msa = value
 
-    def prediction_loss(self, target_predictions, target_labels, label_smoothing=0.1):
+    def prediction_loss(self, 
+                        target_predictions: Dict[str, Tensor], 
+                        target_labels: Dict[str, Tensor], 
+                        label_smoothing: float = 0.1) -> Tuple[Tensor, Dict[str, Tensor]]:
+        """
+        Computes the loss between target predictions and labels.
+        
+        Args:
+            target_predictions: A dictionary of tensors containing predictions for each target.
+            target_labels: A dictionary of tensors containing true labels for each target.
+            label_smoothing: The amount of label smoothing to apply.
+            
+        Returns:
+            A tuple containing the total loss and a dictionary of losses for each target.
+        """
+
         total_target_prediction_loss = 0.0
         target_prediction_loss_dict = {}
         for target_name in self.target_names:
@@ -263,8 +363,13 @@ class AugmentedPropertyPredictor(nn.Module):
             total_target_prediction_loss += tgt_loss
         return total_target_prediction_loss, target_prediction_loss_dict
 
-    def create_optimizer(self):
+    def create_optimizer(self) -> torch.optim.Optimizer:
         """
+        Creates an optimizer for the model.
+        
+        Returns:
+            An instance of a torch.optim.Optimizer.
+
         Setup the optimizer.
         We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
         Trainer's init through `optimizers`, or subclass and override this method in a subclass.
