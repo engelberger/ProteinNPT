@@ -15,10 +15,63 @@ from utils.esm.modules import (
 from utils.esm import pretrained
 from utils.esm.axial_attention import RowSelfAttention, ColumnSelfAttention
 from utils import model_utils, tranception
+from typing import Any, Dict, List, Optional, Tuple, Union
+import torch
+from torch import Tensor
+from transformers import PreTrainedTokenizer
+from torch.nn import Module, ModuleDict, ModuleList
+from transformers.models.conv_bert.modeling_conv_bert import ConvBertLayer
+from transformers.configuration_conv_bert import ConvBertConfig
 
 class ProteinNPTModel(nn.Module):
-    def __init__(self, args, alphabet):
-        super().__init__()
+    """
+    ProteinNPTModel is a neural network model for protein sequence prediction tasks, integrating various types of embeddings and attention mechanisms.
+    
+    Attributes:
+        args: Configuration arguments for the model.
+        alphabet: Alphabet used for tokenizing protein sequences.
+        alphabet_size: Size of the alphabet (number of tokens).
+        padding_idx: Index of the padding token in the alphabet.
+        mask_idx: Index of the mask token in the alphabet.
+        cls_idx: Index of the classification token in the alphabet.
+        eos_idx: Index of the end-of-sequence token in the alphabet.
+        prepend_bos: Whether to prepend a beginning-of-sequence token.
+        append_eos: Whether to append an end-of-sequence token.
+        target_names_input: List of target names for input.
+        target_names: List of target names used for loss calculation.
+        num_targets_input: Number of input targets.
+        num_targets: Number of actual targets to predict.
+        MSA_sample_sequences: Multiple sequence alignment sample sequences.
+        training_sample_sequences_indices: Indices of training sample sequences.
+        device: The device on which the model is running.
+        embeddings_dict: Dictionary of embeddings.
+        optimizer: Optimizer used for training the model.
+        model_type: Type of the model.
+        deactivate_col_attention: Whether to deactivate column attention.
+        tranception_attention: Whether to use Tranception attention mechanism.
+        aa_embedding: Embedding layer for amino acids.
+        aa_embedding_dim: Dimensionality of amino acid embeddings.
+        token_embedding_projection: Projection layer for token embeddings.
+        token_embedding_expansion: Expansion layer for token embeddings.
+        target_embedding: Embedding layers for targets.
+        dropout_module: Dropout layer.
+        layers: List of transformer layers.
+        emb_layer_norm_before: Layer normalization before transformer layers.
+        emb_layer_norm_after: Layer normalization after transformer layers.
+        lm_head: Language model head for protein sequence prediction.
+        layer_pre_head: Pre-head layer for target prediction.
+        target_pred_head: Prediction head for targets.
+        unsupervised_fitness_prediction_weight: Weights for unsupervised fitness prediction.
+    """
+    
+    def __init__(self, args: Any, alphabet: PreTrainedTokenizer):
+        """
+        Initializes the ProteinNPTModel with the given arguments and alphabet.
+        
+        Args:
+            args: Configuration arguments for the model.
+            alphabet: Alphabet used for tokenizing protein sequences.
+        """
         self.args = args
         self.alphabet = alphabet
         self.alphabet_size = len(alphabet)
@@ -184,7 +237,10 @@ class ProteinNPTModel(nn.Module):
                 }
         )
     
-    def set_device(self):
+    def set_device(self) -> None:
+        """
+        Sets the device for the model based on the device of the model parameters.
+        """
         if self.device is None:
             self.device = next(self.parameters()).device
         print("Model device: {}".format(self.device))
@@ -357,8 +413,23 @@ class ProteinNPTModel(nn.Module):
         for module in self.modules():
             if isinstance(module, (RowSelfAttention, ColumnSelfAttention)):
                 module.max_tokens_per_msa = value
-
-    def protein_npt_loss(self, token_predictions_logits, token_labels, target_predictions, target_labels, MLM_reconstruction_loss_weight, label_smoothing=0.0):
+    def protein_npt_loss(self, token_predictions_logits: Tensor, token_labels: Tensor, 
+                         target_predictions: Dict[str, Tensor], target_labels: Dict[str, Tensor], 
+                         MLM_reconstruction_loss_weight: float, label_smoothing: float = 0.0) -> Tuple[Tensor, Tensor, Dict[str, Tensor]]:
+        """
+        Computes the loss for the ProteinNPTModel.
+        
+        Args:
+            token_predictions_logits: Logits for token predictions.
+            token_labels: Labels for token predictions.
+            target_predictions: Dictionary containing predictions for targets.
+            target_labels: Dictionary containing labels for targets.
+            MLM_reconstruction_loss_weight: Weight for the masked language model reconstruction loss.
+            label_smoothing: Label smoothing factor for classification loss.
+            
+        Returns:
+            A tuple containing the total loss, reconstruction loss, and target prediction loss.
+        """
         target_prediction_loss_weight = 1.0 - MLM_reconstruction_loss_weight
         total_loss = 0.0
         if (token_labels is not None) and (MLM_reconstruction_loss_weight > 0.0):
